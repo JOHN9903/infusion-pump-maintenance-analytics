@@ -1,572 +1,593 @@
-%%writefile app.py
+
+import tempfile
+from pathlib import Path
+
 import gradio as gr
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import tempfile
+
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-# ==================================================
-# 1. DATA AND MODEL INITIALIZATION
-# ==================================================
 
-# Set random seed for reproducibility
-np.random.seed(42)
+# ============================================================
+# INFUSION PUMP PREDICTIVE MAINTENANCE DEMONSTRATION
+# Research prototype using synthetic data only.
+# Not validated for real medical equipment or clinical use.
+# ============================================================
 
-# Generate model training dataset (1500 pumps)
-n_train = 1500
-age_years_train = np.random.uniform(0.5, 10, n_train)
-monthly_hours_train = np.random.randint(40, 301, n_train)
-previous_faults_train = np.random.poisson(1.2, n_train)
-battery_pct_train = np.random.uniform(35, 100, n_train)
-months_since_service_train = np.random.randint(0, 19, n_train)
+APP_TITLE = "Infusion Pump Maintenance Analytics"
+RANDOM_SEED = 42
 
-risk_score_train = (
-    -3.5
-    + 0.18 * age_years_train
-    + 0.004 * monthly_hours_train
-    + 0.35 * previous_faults_train
-    - 0.025 * battery_pct_train
-    + 0.07 * months_since_service_train
-)
-probability_train = 1 / (1 + np.exp(-risk_score_train))
-failed_next_30_days = np.random.binomial(1, probability_train)
-
-train_df = pd.DataFrame({
-    "age_years": age_years_train.round(1),
-    "monthly_hours": monthly_hours_train,
-    "previous_faults_90d": previous_faults_train,
-    "battery_capacity_pct": battery_pct_train.round(1),
-    "months_since_service": months_since_service_train,
-    "failed_next_30_days": failed_next_30_days
-})
-
-FEATURE_COLUMNS = [
+FEATURES = [
     "age_years",
     "monthly_hours",
     "previous_faults_90d",
     "battery_capacity_pct",
-    "months_since_service"
+    "months_since_service",
 ]
 
-X_train = train_df[FEATURE_COLUMNS]
-y_train = train_df["failed_next_30_days"]
+FEATURE_LABELS = {
+    "age_years": "Pump age (years)",
+    "monthly_hours": "Monthly operating hours",
+    "previous_faults_90d": "Faults in the last 90 days",
+    "battery_capacity_pct": "Battery capacity (%)",
+    "months_since_service": "Months since last service",
+}
 
-# Build and train baseline model
-baseline_model = make_pipeline(
-    StandardScaler(),
-    LogisticRegression(
-        max_iter=1000,
-        class_weight="balanced",
-        random_state=42
-    )
+DISCLAIMER = (
+    "**Research prototype:** All records and predictions in this application "
+    "are generated from synthetic data. This model has not been validated "
+    "against real infusion-pump failure records. Do not use its outputs to "
+    "make clinical decisions, determine equipment safety, or replace "
+    "manufacturer instructions and qualified biomedical engineering checks."
 )
-baseline_model.fit(X_train, y_train)
 
-# Generate simulated hospital inventory (100 pumps)
-np.random.seed(123)
-n_pumps = 100
-pump_inventory = pd.DataFrame({
-    "pump_id": [f"IP-{i:03d}" for i in range(1, n_pumps + 1)],
-    "age_years": np.round(np.random.uniform(0.5, 10, n_pumps), 1),
-    "monthly_hours": np.random.randint(40, 301, n_pumps),
-    "previous_faults_90d": np.random.poisson(1.2, n_pumps),
-    "battery_capacity_pct": np.round(
-        np.random.uniform(35, 100, n_pumps), 1
-    ),
-    "months_since_service": np.random.randint(0, 19, n_pumps)
+
+# ============================================================
+# 1. GENERATE SYNTHETIC TRAINING DATA
+# ============================================================
+
+rng = np.random.default_rng(RANDOM_SEED)
+
+n_training_records = 1500
+
+training_data = pd.DataFrame({
+    "age_years": rng.integers(1, 16, n_training_records),
+    "monthly_hours": rng.integers(20, 301, n_training_records),
+    "previous_faults_90d": rng.integers(0, 6, n_training_records),
+    "battery_capacity_pct": rng.integers(50, 101, n_training_records),
+    "months_since_service": rng.integers(0, 25, n_training_records),
 })
 
-pump_ids = sorted(pump_inventory["pump_id"].tolist())
-DEFAULT_THRESHOLD = 0.30
+# Illustrative relationship between equipment characteristics and
+# a synthetic failure label. This is not a real-world failure equation.
+risk_score_train = (
+    -3.5
+    + 0.18 * training_data["age_years"]
+    + 0.004 * training_data["monthly_hours"]
+    + 0.35 * training_data["previous_faults_90d"]
+    - 0.025 * training_data["battery_capacity_pct"]
+    + 0.07 * training_data["months_since_service"]
+)
 
-# ==================================================
-# 2. INVENTORY ANALYTICS
-# ==================================================
+probability_train = 1 / (1 + np.exp(-risk_score_train))
 
-def get_ranked_inventory(threshold):
-    results = pump_inventory.copy()
+training_data["failed_next_30_days"] = rng.binomial(
+    1, probability_train
+)
 
-    results["failure_probability_pct"] = (
-        baseline_model.predict_proba(
-            results[FEATURE_COLUMNS]
-        )[:, 1] * 100
+X_train = training_data[FEATURES]
+y_train = training_data["failed_next_30_days"]
+
+model = Pipeline([
+    ("scaler", StandardScaler()),
+    (
+        "classifier",
+        LogisticRegression(
+            class_weight="balanced",
+            max_iter=1000,
+            random_state=RANDOM_SEED,
+        ),
+    ),
+])
+
+model.fit(X_train, y_train)
+
+
+# ============================================================
+# 2. GENERATE A SYNTHETIC PUMP INVENTORY
+# ============================================================
+
+inventory_rng = np.random.default_rng(123)
+N_PUMPS = 100
+
+inventory = pd.DataFrame({
+    "pump_id": [f"IP-{i:03d}" for i in range(1, N_PUMPS + 1)],
+    "age_years": inventory_rng.integers(1, 16, N_PUMPS),
+    "monthly_hours": inventory_rng.integers(20, 301, N_PUMPS),
+    "previous_faults_90d": inventory_rng.integers(0, 6, N_PUMPS),
+    "battery_capacity_pct": inventory_rng.integers(50, 101, N_PUMPS),
+    "months_since_service": inventory_rng.integers(0, 25, N_PUMPS),
+})
+
+inventory["failure_probability"] = model.predict_proba(
+    inventory[FEATURES]
+)[:, 1]
+
+
+# ============================================================
+# 3. HELPER FUNCTIONS
+# ============================================================
+
+def risk_category(probability, threshold=0.30):
+    """Assign a descriptive category to a model probability."""
+    if probability >= threshold:
+        return "High"
+    elif probability >= threshold * 0.5:
+        return "Medium"
+    return "Low"
+
+
+def prepare_inventory(threshold=0.30, view="All pumps"):
+    """Return a sorted inventory with risk categories."""
+    df = inventory.copy()
+
+    df["failure_risk_pct"] = (
+        df["failure_probability"] * 100
     ).round(1)
 
-    results["alert"] = np.where(
-        results["failure_probability_pct"] >= threshold * 100,
-        "Review flag",
-        "Below threshold"
+    df["risk_category"] = df["failure_probability"].apply(
+        lambda p: risk_category(p, threshold)
     )
 
-    results = results.sort_values(
-        "failure_probability_pct",
-        ascending=False
+    df["threshold_flag"] = np.where(
+        df["failure_probability"] >= threshold,
+        "Above threshold",
+        "Below threshold",
+    )
+
+    df = df.sort_values(
+        "failure_probability", ascending=False
     ).reset_index(drop=True)
 
-    results.insert(0, "risk_rank", range(1, len(results) + 1))
+    if view == "High risk":
+        df = df[df["risk_category"] == "High"]
+    elif view == "Medium risk":
+        df = df[df["risk_category"] == "Medium"]
+    elif view == "Low risk":
+        df = df[df["risk_category"] == "Low"]
 
-    return results
+    return df
 
 
-def visual_dashboard(threshold, view):
-    results = get_ranked_inventory(threshold)
-
-    if view == "Flagged pumps only":
-        displayed = results[
-            results["alert"] == "Review flag"
-        ].copy()
-    else:
-        displayed = results.copy()
-
-    total = len(results)
-    flagged = int((results["alert"] == "Review flag").sum())
-    average_risk = results["failure_probability_pct"].mean()
-
-    summary = (
-        f"### Inventory Summary\n\n"
-        f"- **Total simulated pumps:** {total}\n"
-        f"- **Review flags:** {flagged}\n"
-        f"- **Below threshold:** {total - flagged}\n"
-        f"- **Average estimated probability:** {average_risk:.1f}%\n"
-        f"- **Current threshold:** {threshold:.0%}\n\n"
-        f"> Synthetic-data research demonstration only. "
-        f"Scores are not validated predictions of real pump failures."
-    )
-
-    top10 = results.head(10).sort_values(
-        "failure_probability_pct"
-    )
-
-    bar_chart = px.bar(
-        top10,
-        x="failure_probability_pct",
+def inventory_chart(df):
+    """Create a chart of the highest predicted risk scores."""
+    fig = px.bar(
+        df.head(15).sort_values("failure_risk_pct"),
+        x="failure_risk_pct",
         y="pump_id",
         orientation="h",
-        title="10 Highest Estimated Failure Probabilities",
+        title="15 Highest Predicted Risk Scores",
         labels={
-            "failure_probability_pct": "Estimated probability (%)",
-            "pump_id": "Pump ID"
-        }
+            "failure_risk_pct": "Predicted probability (%)",
+            "pump_id": "Pump ID",
+        },
+        hover_data=[
+            "age_years",
+            "previous_faults_90d",
+            "battery_capacity_pct",
+            "months_since_service",
+        ],
     )
 
-    bar_chart.update_layout(
+    fig.update_layout(
+        height=500,
         xaxis_range=[0, 100],
-        height=400
+        margin=dict(l=20, r=20, t=60, b=40),
     )
 
-    risk_chart = px.histogram(
-        results,
-        x="failure_probability_pct",
-        nbins=10,
-        title="Distribution of Estimated Risk",
-        labels={
-            "failure_probability_pct": "Estimated probability (%)",
-            "count": "Number of pumps"
-        }
-    )
+    return fig
 
-    risk_chart.add_vline(
-        x=threshold * 100,
-        line_dash="dash",
-        annotation_text="Selected threshold"
-    )
 
-    risk_chart.update_layout(height=350)
-
+def create_csv_download(df, prefix="pump_inventory"):
+    """Write a dataframe to a temporary CSV file for download."""
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".csv",
-        prefix="pump_risk_report_",
+        prefix=f"{prefix}_",
         delete=False,
         encoding="utf-8",
-        newline=""
-    ) as report:
-        displayed.to_csv(report.name, index=False)
-        report_path = report.name
-
-    return summary, displayed, bar_chart, risk_chart, report_path
+        newline="",
+    ) as temp_file:
+        df.to_csv(temp_file.name, index=False)
+        return temp_file.name
 
 
-# ==================================================
-# 3. INDIVIDUAL PUMP INVESTIGATION
-# ==================================================
+# ============================================================
+# 4. INVENTORY ANALYTICS
+# ============================================================
 
-def investigate_pump(pump_id, threshold):
+def visual_dashboard(threshold, view):
+    df = prepare_inventory(threshold, view)
 
-    if not pump_id:
-        return (
-            "Select a pump to begin.",
-            pd.DataFrame(columns=["Measurement", "Recorded value"]),
-            go.Figure(),
-            pd.DataFrame(),
-            None
-        )
-
-    results = get_ranked_inventory(threshold)
-
-    selected_rows = results[
-        results["pump_id"] == pump_id
-    ]
-
-    if selected_rows.empty:
-        return (
-            "Pump not found in the inventory.",
-            pd.DataFrame(columns=["Measurement", "Recorded value"]),
-            go.Figure(),
-            pd.DataFrame(),
-            None
-        )
-
-    pump = selected_rows.iloc[0]
-    probability = float(pump["failure_probability_pct"]) / 100
-    rank = int(pump["risk_rank"])
-
-    flagged_count = int(
-        (results["failure_probability_pct"] >= threshold * 100).sum()
+    all_df = prepare_inventory(threshold, "All pumps")
+    total = len(inventory)
+    high_count = int((all_df["risk_category"] == "High").sum())
+    medium_count = int((all_df["risk_category"] == "Medium").sum())
+    low_count = int((all_df["risk_category"] == "Low").sum())
+    above_threshold = int(
+        (all_df["failure_probability"] >= threshold).sum()
     )
-
-    if probability >= threshold:
-        status = "⚠️ FLAGGED FOR MAINTENANCE REVIEW"
-        short_status = "Flag for review"
-    else:
-        status = "✅ BELOW THE SELECTED REVIEW THRESHOLD"
-        short_status = "Below threshold"
 
     summary = f"""
-## Pump Investigation: {pump_id}
+### Inventory overview
 
-### {status}
+- **Total synthetic pumps:** {total}
+- **High-risk category:** {high_count}
+- **Medium-risk category:** {medium_count}
+- **Low-risk category:** {low_count}
+- **At or above selected threshold ({threshold:.0%}):** {above_threshold}
 
-- **Estimated failure probability:** {probability:.1%}
-- **Selected review threshold:** {threshold:.0%}
-- **Risk ranking:** #{rank} of {len(results)} simulated pumps
-- **Pumps at or above threshold:** {flagged_count} of {len(results)}
+Showing **{len(df)}** pumps for the selected filter.
 
-**Research limitation:** This model uses synthetic data. Its score is
-not a verified probability of real equipment failure.
+{DISCLAIMER}
 """
 
-    feature_labels = {
-        "age_years": "Pump age (years)",
-        "monthly_hours": "Operating hours per month",
-        "previous_faults_90d": "Previous faults (90 days)",
-        "battery_capacity_pct": "Battery capacity (%)",
-        "months_since_service": "Months since last service"
-    }
+    display_columns = [
+        "pump_id",
+        "risk_category",
+        "failure_risk_pct",
+        "age_years",
+        "monthly_hours",
+        "previous_faults_90d",
+        "battery_capacity_pct",
+        "months_since_service",
+        "threshold_flag",
+    ]
 
-    profile = pd.DataFrame({
-        "Measurement": [
-            feature_labels[col] for col in FEATURE_COLUMNS
-        ],
-        "Recorded value": [
-            pump[col] for col in FEATURE_COLUMNS
-        ]
-    })
+    display_df = df[display_columns].copy()
 
-    gauge = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=probability * 100,
-            number={"suffix": "%"},
-            title={"text": "Model-estimated risk score"},
-            gauge={
-                "axis": {"range": [0, 100]},
-                "bar": {"color": "#2563eb"},
-                "steps": [
-                    {
-                        "range": [0, threshold * 100],
-                        "color": "#dbeafe"
-                    },
-                    {
-                        "range": [threshold * 100, 100],
-                        "color": "#fee2e2"
-                    }
-                ],
-                "threshold": {
-                    "line": {"color": "#dc2626", "width": 4},
-                    "thickness": 0.8,
-                    "value": threshold * 100
-                }
-            }
-        )
+    fig = inventory_chart(all_df)
+
+    csv_path = create_csv_download(
+        display_df, prefix="infusion_pump_inventory"
     )
 
-    gauge.update_layout(
-        height=320,
-        margin=dict(l=25, r=25, t=65, b=20)
-    )
-
-    # Compare the selected pump with nearby-ranked pumps
-    start = max(0, rank - 3)
-    end = min(len(results), rank + 2)
-
-    comparison = results.iloc[start:end][
-        ["risk_rank", "pump_id", "failure_probability_pct", "alert"]
-    ].copy()
-
-    comparison = comparison.rename(columns={
-        "risk_rank": "Rank",
-        "pump_id": "Pump ID",
-        "failure_probability_pct": "Estimated risk (%)",
-        "alert": "Review status"
-    })
-
-    # Create the individual pump report
-    report_data = {
-        "pump_id": pump_id,
-        **{col: pump[col] for col in FEATURE_COLUMNS},
-        "estimated_risk_probability": round(probability, 4),
-        "selected_threshold": threshold,
-        "risk_rank": rank,
-        "inventory_size": len(results),
-        "review_status": short_status,
-        "data_type": "Simulated research data"
-    }
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".csv",
-        prefix=f"{pump_id}_investigation_",
-        delete=False,
-        encoding="utf-8",
-        newline=""
-    ) as report:
-        pd.DataFrame([report_data]).to_csv(
-            report.name,
-            index=False
-        )
-        report_path = report.name
-
-    return summary, profile, gauge, comparison, report_path
+    return summary, display_df, fig, csv_path
 
 
-# ==================================================
-# 4. CONNECT THE SELECTED PUMP TO THE INVESTIGATION
-# ==================================================
+def export_inventory(threshold, view):
+    df = prepare_inventory(threshold, view)
 
-def load_selected_pump(pump_id):
+    export_columns = [
+        "pump_id",
+        "risk_category",
+        "failure_probability",
+        "failure_risk_pct",
+        "age_years",
+        "monthly_hours",
+        "previous_faults_90d",
+        "battery_capacity_pct",
+        "months_since_service",
+        "threshold_flag",
+    ]
+
+    return create_csv_download(df[export_columns], prefix="pump_risk_report")
+
+
+# ============================================================
+# 5. INDIVIDUAL PUMP INVESTIGATION
+# ============================================================
+
+def investigate_pump(pump_id, threshold):
     if not pump_id:
         return (
-            gr.update(),
-            "Please select a pump first."
+            "Select a pump to view its synthetic risk assessment.",
+            go.Figure(),
         )
-    return (
-        gr.update(value=pump_id),
-        f"**{pump_id} selected.** Open the Pump Investigation tab."
+
+    row = inventory.loc[inventory["pump_id"] == pump_id]
+
+    if row.empty:
+        return "Pump ID not found.", go.Figure()
+
+    pump = row.iloc[0]
+    probability = float(pump["failure_probability"])
+    category = risk_category(probability, threshold)
+
+    features_df = pd.DataFrame(
+        [pump[FEATURES].to_dict()]
     )
 
+    # Logistic-regression feature contributions are shown as an
+    # illustrative explanation, not as a causal diagnosis.
+    classifier = model.named_steps["classifier"]
+    scaler = model.named_steps["scaler"]
 
-def investigate_from_selector(pump_id, threshold):
-    return investigate_pump(pump_id, threshold)
+    scaled_values = scaler.transform(features_df)
+    contributions = scaled_values[0] * classifier.coef_[0]
+
+    explanation_df = pd.DataFrame({
+        "Feature": [
+            FEATURE_LABELS[feature] for feature in FEATURES
+        ],
+        "Illustrative model contribution": contributions,
+    })
+
+    explanation_df = explanation_df.sort_values(
+        "Illustrative model contribution"
+    )
+
+    fig = px.bar(
+        explanation_df,
+        x="Illustrative model contribution",
+        y="Feature",
+        orientation="h",
+        title="Illustrative Feature Contributions",
+        labels={
+            "Illustrative model contribution": "Scaled model contribution",
+            "Feature": "Input feature",
+        },
+    )
+
+    fig.update_layout(
+        height=400,
+        margin=dict(l=20, r=20, t=60, b=40),
+    )
+
+    details = f"""
+### Pump investigation: {pump_id}
+
+**Predicted probability:** {probability:.1%}
+
+**Category at the selected threshold:** {category}
+
+**Threshold:** {threshold:.0%}
+
+#### Recorded synthetic characteristics
+
+| Characteristic | Value |
+|---|---:|
+| Pump age | {int(pump["age_years"])} years |
+| Monthly operating hours | {int(pump["monthly_hours"])} |
+| Faults in previous 90 days | {int(pump["previous_faults_90d"])} |
+| Battery capacity | {int(pump["battery_capacity_pct"])}% |
+| Months since last service | {int(pump["months_since_service"])} |
+
+#### Suggested research workflow
+
+1. Review the pump's actual service and maintenance history.
+2. Check the manufacturer's maintenance instructions and service intervals.
+3. Have qualified biomedical engineering personnel perform appropriate inspections and tests.
+4. Document verified findings before making maintenance decisions.
+
+The probability is produced by a model trained on synthetic data. It is **not a verified probability of real pump failure**, and the chart does not establish that any feature caused a failure.
+
+{DISCLAIMER}
+"""
+
+    return details, fig
 
 
-def refresh_both_tabs(threshold, view, pump_id):
-    analytics = visual_dashboard(threshold, view)
-    investigation = investigate_pump(pump_id, threshold)
-    return (*analytics, *investigation)
+def load_selected_pump(pump_id):
+    """Return a selected pump ID for the investigation tab."""
+    return pump_id
 
 
-# ==================================================
-# 5. BUILD THE INTEGRATED APPLICATION
-# ==================================================
+# ============================================================
+# 6. GRADIO WEB APPLICATION
+# ============================================================
 
-with gr.Blocks(theme=gr.themes.Soft()) as app:
+pump_choices = inventory["pump_id"].tolist()
 
-    gr.Markdown("""
-    # 🏥 Infusion Pump Maintenance & Analytics Hub
-
-    Explore the simulated pump inventory and investigate individual
-    pumps using a machine-learning research prototype.
-    """)
+with gr.Blocks(
+    title=APP_TITLE,
+    theme=gr.themes.Soft(),
+) as app:
 
     gr.Markdown(
-        "**Research demonstration only:** Synthetic records and model "
-        "scores are not validated for real equipment-safety decisions."
+        f"""
+# 🏥 {APP_TITLE}
+
+**Machine learning portfolio prototype for predictive maintenance**
+
+Explore a synthetic infusion-pump inventory, adjust the risk threshold,
+investigate individual pumps, and export research reports.
+
+{DISCLAIMER}
+"""
     )
 
-    # Shared threshold applies to both tabs
-    threshold_control = gr.Slider(
-        minimum=0.05,
-        maximum=0.80,
-        value=DEFAULT_THRESHOLD,
-        step=0.05,
-        label="System-wide review threshold"
-    )
+    with gr.Row():
+        threshold = gr.Slider(
+            minimum=0.05,
+            maximum=0.95,
+            value=0.30,
+            step=0.05,
+            label="Risk threshold",
+            info="Used to classify a pump as high risk when its predicted score meets or exceeds this value.",
+        )
 
     with gr.Tabs():
 
-        # ------------------------------------------
+        # ----------------------------------------------------
         # TAB 1: INVENTORY ANALYTICS
-        # ------------------------------------------
-
+        # ----------------------------------------------------
         with gr.Tab("📊 Inventory Analytics"):
 
-            gr.Markdown("## System-Wide Risk Tracking")
-
-            inventory_filter = gr.Radio(
-                choices=["All pumps", "Flagged pumps only"],
+            view = gr.Dropdown(
+                choices=[
+                    "All pumps",
+                    "High risk",
+                    "Medium risk",
+                    "Low risk",
+                ],
                 value="All pumps",
-                label="Inventory filter"
+                label="Inventory filter",
             )
 
             refresh_button = gr.Button(
-                "Refresh Analytics",
-                variant="primary"
+                "Refresh dashboard",
+                variant="primary",
             )
 
-            analytics_summary = gr.Markdown()
+            summary_output = gr.Markdown()
 
             inventory_table = gr.Dataframe(
-                label="Ranked Pump Inventory",
-                interactive=False
+                label="Pump risk inventory",
+                interactive=False,
+                wrap=True,
+            )
+
+            inventory_plot = gr.Plot(
+                label="Risk ranking chart"
             )
 
             with gr.Row():
-                highest_risk_chart = gr.Plot(
-                    label="Highest-Risk Pumps"
+                export_button = gr.Button(
+                    "Export filtered inventory CSV"
                 )
-                distribution_chart = gr.Plot(
-                    label="Risk Distribution"
+                export_file = gr.File(
+                    label="Download inventory report"
                 )
 
-            inventory_download = gr.File(
-                label="Download CSV Report"
+            selected_inventory_pump = gr.Dropdown(
+                choices=pump_choices,
+                value=pump_choices[0],
+                label="Choose a pump to investigate",
             )
 
-            gr.Markdown("## Investigate a Pump")
-
-            pump_to_investigate = gr.Dropdown(
-                choices=pump_ids,
-                value=pump_ids[0] if pump_ids else None,
-                label="Choose a pump from the inventory",
-                interactive=True
+            investigate_button = gr.Button(
+                "Open pump investigation",
+                variant="secondary",
             )
 
-            open_investigation_button = gr.Button(
-                "Load Pump into Investigation",
-                variant="primary"
-            )
-
-            navigation_message = gr.Markdown()
-
-        # ------------------------------------------
-        # TAB 2: PUMP INVESTIGATION
-        # ------------------------------------------
-
+        # ----------------------------------------------------
+        # TAB 2: INDIVIDUAL PUMP INVESTIGATION
+        # ----------------------------------------------------
         with gr.Tab("🔍 Pump Investigation"):
 
-            gr.Markdown("""
-            ## Individual Pump Investigation
-
-            Inspect technical measurements, risk score, inventory
-            ranking, and an individual CSV report.
-            """)
-
-            investigation_selector = gr.Dropdown(
-                choices=pump_ids,
-                value=pump_ids[0] if pump_ids else None,
-                label="Selected pump ID",
-                interactive=True
+            selected_pump = gr.Dropdown(
+                choices=pump_choices,
+                value=pump_choices[0],
+                label="Select pump ID",
             )
 
-            investigation_summary = gr.Markdown()
-
-            with gr.Row():
-                technical_profile = gr.Dataframe(
-                    label="Pump Technical Profile",
-                    interactive=False
-                )
-
-                risk_gauge = gr.Plot(
-                    label="Estimated Risk Score"
-                )
-
-            nearby_pumps = gr.Dataframe(
-                label="Nearby Pumps in Risk Ranking",
-                interactive=False
+            investigate_one_button = gr.Button(
+                "Assess selected pump",
+                variant="primary",
             )
 
-            individual_download = gr.File(
-                label="Download Individual Pump Report"
+            investigation_output = gr.Markdown()
+
+            investigation_plot = gr.Plot(
+                label="Illustrative feature contributions"
             )
 
-    # ------------------------------------------
-    # EVENT CONNECTIONS
-    # ------------------------------------------
+    gr.Markdown(
+        """
+---
+**Project note:** This application demonstrates a machine-learning workflow.
+It does not connect to real infusion pumps, hospital records, or monitoring
+systems. All generated data are synthetic.
+"""
+    )
 
-    analytics_outputs = [
-        analytics_summary,
-        inventory_table,
-        highest_risk_chart,
-        distribution_chart,
-        inventory_download
-    ]
-
-    investigation_outputs = [
-        investigation_summary,
-        technical_profile,
-        risk_gauge,
-        nearby_pumps,
-        individual_download
-    ]
-
-    # Initial display loads
+    # Initial dashboard and investigation display
     app.load(
         fn=visual_dashboard,
-        inputs=[threshold_control, inventory_filter],
-        outputs=analytics_outputs
+        inputs=[threshold, view],
+        outputs=[
+            summary_output,
+            inventory_table,
+            inventory_plot,
+            export_file,
+        ],
     )
 
     app.load(
-        fn=investigate_from_selector,
-        inputs=[investigation_selector, threshold_control],
-        outputs=investigation_outputs
+        fn=investigate_pump,
+        inputs=[selected_pump, threshold],
+        outputs=[investigation_output, investigation_plot],
     )
 
-    # Refresh or filter the inventory
+    # Refresh the inventory dashboard
     refresh_button.click(
         fn=visual_dashboard,
-        inputs=[threshold_control, inventory_filter],
-        outputs=analytics_outputs
-    )
-
-    inventory_filter.change(
-        fn=visual_dashboard,
-        inputs=[threshold_control, inventory_filter],
-        outputs=analytics_outputs
-    )
-
-    # Select a pump in analytics and load its investigation
-    open_investigation_button.click(
-        fn=load_selected_pump,
-        inputs=[pump_to_investigate],
+        inputs=[threshold, view],
         outputs=[
-            investigation_selector,
-            navigation_message
-        ]
-    )
-
-    # Also allow direct selection inside the investigation tab
-    investigation_selector.change(
-        fn=investigate_from_selector,
-        inputs=[investigation_selector, threshold_control],
-        outputs=investigation_outputs
-    )
-
-    # Single threshold event updating both views
-    threshold_control.change(
-        fn=refresh_both_tabs,
-        inputs=[
-            threshold_control,
-            inventory_filter,
-            investigation_selector
+            summary_output,
+            inventory_table,
+            inventory_plot,
+            export_file,
         ],
-        outputs=analytics_outputs + investigation_outputs
     )
+
+    # Changing the filter refreshes the inventory view
+    view.change(
+        fn=visual_dashboard,
+        inputs=[threshold, view],
+        outputs=[
+            summary_output,
+            inventory_table,
+            inventory_plot,
+            export_file,
+        ],
+    )
+
+    # Changing the threshold refreshes both tabs
+    threshold.change(
+        fn=visual_dashboard,
+        inputs=[threshold, view],
+        outputs=[
+            summary_output,
+            inventory_table,
+            inventory_plot,
+            export_file,
+        ],
+    )
+
+    threshold.change(
+        fn=investigate_pump,
+        inputs=[selected_pump, threshold],
+        outputs=[investigation_output, investigation_plot],
+    )
+
+    # Export the filtered inventory as a CSV
+    export_button.click(
+        fn=export_inventory,
+        inputs=[threshold, view],
+        outputs=[export_file],
+    )
+
+    # Update the investigation selector when a pump is chosen
+    investigate_button.click(
+        fn=load_selected_pump,
+        inputs=[selected_inventory_pump],
+        outputs=[selected_pump],
+    ).then(
+        fn=investigate_pump,
+        inputs=[selected_pump, threshold],
+        outputs=[investigation_output, investigation_plot],
+    )
+
+    # Recalculate the individual assessment
+    investigate_one_button.click(
+        fn=investigate_pump,
+        inputs=[selected_pump, threshold],
+        outputs=[investigation_output, investigation_plot],
+    )
+
+    selected_pump.change(
+        fn=investigate_pump,
+        inputs=[selected_pump, threshold],
+        outputs=[investigation_output, investigation_plot],
+    )
+
 
 if __name__ == "__main__":
     app.launch()
